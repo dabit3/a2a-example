@@ -16,11 +16,25 @@ import {
 } from "@a2a-js/sdk/server";
 import { A2AExpressApp } from "@a2a-js/sdk/server/express";
 import { v4 as uuidv4 } from "uuid";
-
 import express from "express";
-import { basePrompt } from "./basePrompt";
+import { paymentMiddleware, Resource, Network } from "x402-express";
+import { basePrompt } from "./basePrompt.js";
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 41243;
+
+// x402 Payment Configuration
+const facilitatorUrl = process.env.FACILITATOR_URL as Resource;
+const payTo = process.env.ADDRESS as `0x${string}`;
+const network = (process.env.X402_NETWORK || "base-sepolia") as Network;
+
+console.log('facilitatorUrl: ', process.env.FACILITATOR_URL)
+console.log('payTo: ', process.env.ADDRESS)
+console.log('network: ', process.env.X402_NETWORK)
+
+if (!facilitatorUrl || !payTo) {
+  console.warn("⚠️  x402 Payment not configured. Please set FACILITATOR_URL and ADDRESS in .env");
+  console.warn("⚠️  Continuing without payment protection...");
+}
 
 const movieAgentCard: AgentCard = {
   name: process.env.AGENT_NAME || "Movie Agent",
@@ -68,6 +82,11 @@ const movieAgentCard: AgentCard = {
 // 1. Define your agent's logic as a AgentExecutor
 class MyAgentExecutor implements AgentExecutor {
   private cancelledTasks = new Set<string>();
+  private paymentVerified = false;
+
+  public setPaymentVerified(verified: boolean) {
+    this.paymentVerified = verified;
+  }
 
   public cancelTask = async (
     taskId: string,
@@ -136,62 +155,72 @@ class MyAgentExecutor implements AgentExecutor {
     };
     eventBus.publish(workingStatusUpdate);
 
-    // Simulate work...
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    // Use fetch to call the Anthropic API with the user message, and extract the response text.
-    // We'll use the Claude 3 model (e.g., claude-3-opus-20240229) for this example.
-    // The API key is in process.env.ANTHROPIC_API_KEY
-
-    // Prepare the Anthropic API request
-    const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
-    if (!anthropicApiKey) {
-      throw new Error("ANTHROPIC_API_KEY environment variable is not set.");
-    }
-
-    let prompt = basePrompt + messageText;
-    // Compose the API request payload
-    const anthropicPayload = {
-      model: "claude-3-opus-20240229",
-      max_tokens: 512,
-      messages: [
-        {
-          role: "user",
-          content: prompt
-        }
-      ]
-    };
-
-    // Call the Anthropic API
+    // Check if payment is enabled and required
+    const paymentRequired = facilitatorUrl && payTo;
+    
     let anthropicResponseText = "";
-    try {
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "x-api-key": anthropicApiKey,
-          "anthropic-version": "2023-06-01",
-          "content-type": "application/json"
-        },
-        body: JSON.stringify(anthropicPayload)
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Anthropic API error: ${response.status} ${errorText}`);
+    
+    // Only call Anthropic API if payment is not required OR payment is verified
+    if (!paymentRequired || this.paymentVerified) {
+      // Simulate work...
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      
+      console.log("[MyAgentExecutor] Payment verified or not required, calling Anthropic API...");
+      
+      // Prepare the Anthropic API request
+      const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
+      if (!anthropicApiKey) {
+        throw new Error("ANTHROPIC_API_KEY environment variable is not set.");
       }
 
-      const data = await response.json() as any;
-      // The response content is in data.content, which is an array of message parts
-      // We'll concatenate all text parts
-      if (Array.isArray(data.content)) {
-        anthropicResponseText = data.content
-          .map((part: any) => (typeof part.text === "string" ? part.text : ""))
-          .join("");
-      } else {
-        anthropicResponseText = "";
+      let prompt = basePrompt + messageText;
+      // Compose the API request payload
+      const anthropicPayload = {
+        model: "claude-3-opus-20240229",
+        max_tokens: 512,
+        messages: [
+          {
+            role: "user",
+            content: prompt
+          }
+        ]
+      };
+
+      // Call the Anthropic API
+      try {
+        const response = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: {
+            "x-api-key": anthropicApiKey,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json"
+          },
+          body: JSON.stringify(anthropicPayload)
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`Anthropic API error: ${response.status} ${errorText}`);
+        }
+
+        const data = await response.json() as any;
+        // The response content is in data.content, which is an array of message parts
+        // We'll concatenate all text parts
+        if (Array.isArray(data.content)) {
+          anthropicResponseText = data.content
+            .map((part: any) => (typeof part.text === "string" ? part.text : ""))
+            .join("");
+        } else {
+          anthropicResponseText = "";
+        }
+      } catch (err) {
+        anthropicResponseText = "Sorry, there was an error contacting the Anthropic API.";
+        console.error("Anthropic API call failed:", err);
       }
-    } catch (err) {
-      anthropicResponseText = "Sorry, there was an error contacting the Anthropic API.";
-      console.error("Anthropic API call failed:", err);
+    } else {
+      // Payment required but not verified
+      console.log("[MyAgentExecutor] Payment required but not verified, skipping Anthropic API call");
+      anthropicResponseText = "Payment of $0.01 is required to access this AI service. Please ensure payment is included with your request.";
     }
 
     // Check for request cancellation
@@ -255,7 +284,7 @@ class MyAgentExecutor implements AgentExecutor {
 }
 
 const taskStore: TaskStore = new InMemoryTaskStore();
-const agentExecutor: AgentExecutor = new MyAgentExecutor();
+const agentExecutor = new MyAgentExecutor();
 
 const requestHandler = new DefaultRequestHandler(
   movieAgentCard,
@@ -264,7 +293,61 @@ const requestHandler = new DefaultRequestHandler(
 );
 
 const appBuilder = new A2AExpressApp(requestHandler);
-const expressApp = appBuilder.setupRoutes(express(), "");
+const expressApp = express();
+
+// Apply x402 payment middleware if configured
+if (facilitatorUrl && payTo) {
+  console.log("[x402] Enabling payment protection...");
+  console.log(`[x402] Receiving address: ${payTo}`);
+  console.log(`[x402] Network: ${network}`);
+  console.log(`[x402] Facilitator: ${facilitatorUrl}`);
+  expressApp.use(
+    paymentMiddleware(
+      payTo,
+      {
+        // Protected A2A agent endpoints with payment requirements
+        "POST /": {
+          price: "$0.01",
+          network: network,
+          config: {
+            description: "Access AI movie agent"
+          }
+        }
+      },
+      {
+        url: facilitatorUrl,
+      }
+    )
+  );
+}
+
+// Add middleware to check payment status and update executor
+expressApp.use((req, res, next) => {
+  // Check if payment header is present (x402 middleware validates it)
+  const paymentHeader = req.headers['x-payment'];
+  
+  if (paymentHeader) {
+    console.log("[Payment Middleware] Payment header detected, enabling AI inference");
+    agentExecutor.setPaymentVerified(true);
+    
+    // Add x-payment-response header to response for client
+    res.on('finish', () => {
+      console.log("[Payment Middleware] Request completed with payment");
+    });
+  } else if (facilitatorUrl && payTo) {
+    console.log("[Payment Middleware] No payment header, AI inference disabled");
+    agentExecutor.setPaymentVerified(false);
+  } else {
+    // Payment not configured, allow access
+    console.log("[Payment Middleware] Payment not configured, allowing access");
+    agentExecutor.setPaymentVerified(true);
+  }
+  
+  next();
+});
+
+// Setup A2A routes after payment middleware
+appBuilder.setupRoutes(expressApp, "");
 
 expressApp.listen(PORT, () => {
   console.log(
@@ -273,6 +356,15 @@ expressApp.listen(PORT, () => {
   console.log(
     `[MyAgent] Agent Card: http://localhost:${PORT}/.well-known/agent-card.json`
   );
+  
+  if (facilitatorUrl && payTo) {
+    console.log("[x402] Payment protection is ENABLED");
+    console.log("[x402] Protected endpoints:");
+    console.log("  - POST / ($0.01) - Main A2A RPC endpoint");
+  } else {
+    console.log("[x402] Payment protection is DISABLED (configure ADDRESS in .env)");
+  }
+  
   console.log("[MyAgent] Press Ctrl+C to stop the server");
   console.log(`[MyAgent] Environment: ${process.env.NODE_ENV || 'development'}`);
 });
