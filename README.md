@@ -12,6 +12,14 @@ This server implements an A2A-compliant agent that:
 
 The agent uses Claude to generate intelligent responses about movies and refuses to answer non-movie related questions.
 
+## Client
+
+This repository includes an A2A client that:
+- **Connects to agents** - Communicates with A2A-compliant agents via HTTP
+- **Sends messages** - Submits user queries with configurable output modes
+- **Manages tasks** - Creates tasks and retrieves their status asynchronously
+- **Handles responses** - Processes both direct messages and task-based responses
+
 ## Quick Start
 
 ### Prerequisites

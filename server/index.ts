@@ -126,7 +126,7 @@ class MyAgentExecutor implements AgentExecutor {
           kind: "message",
           role: "agent",
           messageId: uuidv4(),
-          parts: [{ kind: "text", text: "Generating code..." }],
+          parts: [{ kind: "text", text: "Finding your movie information..." }],
           taskId: taskId,
           contextId: contextId,
         },
